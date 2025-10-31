@@ -138,6 +138,7 @@ resource "aws_lambda_function" "poll_api" {
   source_code_hash = filebase64sha256("${path.module}/lambda/package.zip")
   role             = aws_iam_role.lambda_exec_role.arn
   timeout          = 10
+  publish          = true
 
   environment {
     variables = {
@@ -149,6 +150,28 @@ resource "aws_lambda_function" "poll_api" {
   }
 
   tags = local.common_tags
+}
+
+# ----------------------------
+# Provisioned Concurrency 
+# ----------------------------
+variable "enable_provisioned_concurrency" {
+  type    = bool
+  default = true
+}
+
+resource "aws_lambda_provisioned_concurrency_config" "proxy_concurrency" {
+  count                             = var.enable_provisioned_concurrency ? 1 : 0
+  function_name                     = aws_lambda_function.poll_proxy.function_name
+  qualifier                         = aws_lambda_function.poll_proxy.version
+  provisioned_concurrent_executions = 1
+}
+
+resource "aws_lambda_provisioned_concurrency_config" "api_concurrency" {
+  count                             = var.enable_provisioned_concurrency ? 1 : 0
+  function_name                     = aws_lambda_function.poll_api.function_name
+  qualifier                         = aws_lambda_function.poll_api.version
+  provisioned_concurrent_executions = 1
 }
 
 
@@ -278,6 +301,7 @@ resource "aws_lambda_function" "poll_proxy" {
   source_code_hash = filebase64sha256("${path.module}/lambda/package-proxy.zip")
   role             = aws_iam_role.lambda_exec_role.arn
   timeout          = 10
+  publish          = true
 
   environment {
     variables = {
@@ -391,6 +415,86 @@ resource "aws_wafv2_web_acl_association" "api_waf_assoc" {
   resource_arn = "arn:aws:apigateway:${var.region}::/restapis/${aws_api_gateway_rest_api.poll_api.id}/stages/${aws_api_gateway_stage.prod.stage_name}"
   web_acl_arn  = aws_wafv2_web_acl.api_waf.arn
 }
+
+
+# ----------------------------
+# CloudFront distribution for caching poll results
+# ----------------------------
+resource "aws_cloudfront_distribution" "poll_results_cache" {
+  enabled             = true
+  comment             = "CloudFront cache for GET /proxy/results"
+  default_root_object = ""
+
+  origin {
+    domain_name = "${aws_api_gateway_rest_api.poll_api.id}.execute-api.${var.region}.amazonaws.com"
+    origin_id   = "api-gateway-origin"
+    origin_path = "/${var.environment}"
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"] # ✅ required
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id       = "api-gateway-origin"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    default_ttl            = 0
+    max_ttl                = 0
+    min_ttl                = 0
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Origin"]
+
+      cookies {
+        forward = "none" # ✅ required block
+      }
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "proxy/results*"
+    target_origin_id       = "api-gateway-origin"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    default_ttl            = 30
+    max_ttl                = 60
+    min_ttl                = 10
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Origin"]
+
+      cookies {
+        forward = "none" # ✅ required block
+      }
+    }
+  }
+
+  price_class = "PriceClass_100"
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+
+  tags = local.common_tags
+}
+
+output "cloudfront_url" {
+  value = "https://${aws_cloudfront_distribution.poll_results_cache.domain_name}"
+}
+
 
 
 # ----------------------------

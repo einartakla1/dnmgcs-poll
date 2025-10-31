@@ -12,14 +12,32 @@ function corsHeaders(origin?: string): Record<string, string> {
         "Access-Control-Allow-Credentials": "true",
     };
 
-    if (origin && ALLOWED_ORIGINS.includes(origin)) {
-        headers["Access-Control-Allow-Origin"] = origin;
-    } else {
+    if (origin) {
+        try {
+            const url = new URL(origin);
+            // normalize to only protocol + hostname
+            const normalized = `${url.protocol}//${url.hostname}`;
+
+            // allow if base matches any allowed origin
+            if (ALLOWED_ORIGINS.includes(normalized)) {
+                headers["Access-Control-Allow-Origin"] = origin;
+            } else {
+                console.warn(`CORS rejected origin: ${origin}`);
+            }
+        } catch (err) {
+            console.error("CORS invalid origin:", origin, err);
+        }
+    }
+
+    // fallback for safe defaults (localhost or first allowed)
+    if (!headers["Access-Control-Allow-Origin"]) {
         headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0] || "*";
     }
 
     return headers;
 }
+
+
 
 exports.handler = async (
     event: APIGatewayProxyEvent

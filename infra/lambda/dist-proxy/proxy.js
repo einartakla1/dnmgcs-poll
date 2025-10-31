@@ -10,9 +10,20 @@ function corsHeaders(origin) {
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Credentials": "true"
   };
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-  } else {
+  if (origin) {
+    try {
+      const url = new URL(origin);
+      const normalized = `${url.protocol}//${url.hostname}`;
+      if (ALLOWED_ORIGINS.includes(normalized)) {
+        headers["Access-Control-Allow-Origin"] = origin;
+      } else {
+        console.warn(`CORS rejected origin: ${origin}`);
+      }
+    } catch (err) {
+      console.error("CORS invalid origin:", origin, err);
+    }
+  }
+  if (!headers["Access-Control-Allow-Origin"]) {
     headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0] || "*";
   }
   return headers;

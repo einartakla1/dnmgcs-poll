@@ -4,18 +4,6 @@
 var TARGET_API_BASE = process.env.TARGET_API_BASE;
 var PUBLIC_API_KEY = process.env.PUBLIC_API_KEY;
 var ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "").split(",");
-if (!TARGET_API_BASE || !PUBLIC_API_KEY) {
-  console.error("CRITICAL: Missing environment variables!", {
-    TARGET_API_BASE: TARGET_API_BASE || "MISSING",
-    PUBLIC_API_KEY: PUBLIC_API_KEY ? "SET" : "MISSING"
-  });
-  throw new Error("Missing required environment variables");
-}
-console.log("Loaded env:", {
-  TARGET_API_BASE,
-  PUBLIC_API_KEY: "[set]",
-  ALLOWED_ORIGINS
-});
 function corsHeaders(origin) {
   const headers = {
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
@@ -30,24 +18,45 @@ function corsHeaders(origin) {
   return headers;
 }
 exports.handler = async (event) => {
-  const debugInfo = [];
+  console.log("=== PROXY INVOKED ===");
+  console.log("Environment variables:", {
+    TARGET_API_BASE: TARGET_API_BASE || "[MISSING]",
+    PUBLIC_API_KEY: PUBLIC_API_KEY ? "[SET]" : "[MISSING]",
+    ALLOWED_ORIGINS
+  });
+  console.log("Event:", JSON.stringify(event, null, 2));
+  const origin = event.headers.origin || event.headers.Origin;
+  if (event.httpMethod === "OPTIONS") {
+    console.log("Handling OPTIONS preflight");
+    return {
+      statusCode: 200,
+      headers: corsHeaders(origin),
+      body: ""
+    };
+  }
+  if (!TARGET_API_BASE || !PUBLIC_API_KEY) {
+    console.error("CRITICAL: Missing required environment variables!");
+    return {
+      statusCode: 500,
+      headers: corsHeaders(origin),
+      body: JSON.stringify({
+        error: "Configuration error",
+        details: {
+          TARGET_API_BASE: TARGET_API_BASE ? "set" : "missing",
+          PUBLIC_API_KEY: PUBLIC_API_KEY ? "set" : "missing"
+        }
+      })
+    };
+  }
   try {
-    debugInfo.push({ step: "start", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
-    const origin = event.headers.origin || event.headers.Origin;
-    debugInfo.push({ step: "origin", value: origin });
-    if (event.httpMethod === "OPTIONS") {
-      return {
-        statusCode: 200,
-        headers: corsHeaders(origin),
-        body: JSON.stringify({ debug: debugInfo, type: "OPTIONS" })
-      };
-    }
     const forwardPath = event.pathParameters?.proxy ? `/${event.pathParameters.proxy}` : "";
-    debugInfo.push({ step: "forwardPath", value: forwardPath });
     const queryString = event.queryStringParameters ? "?" + Object.entries(event.queryStringParameters).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v ?? "")}`).join("&") : "";
-    debugInfo.push({ step: "queryString", value: queryString });
     const targetUrl = `${TARGET_API_BASE}${forwardPath}${queryString}`;
-    debugInfo.push({ step: "targetUrl", value: targetUrl });
+    console.log("Forwarding request:", {
+      method: event.httpMethod,
+      targetUrl,
+      hasBody: !!event.body
+    });
     const resp = await fetch(targetUrl, {
       method: event.httpMethod,
       headers: {
@@ -56,34 +65,35 @@ exports.handler = async (event) => {
       },
       body: event.httpMethod === "GET" ? void 0 : event.body
     });
-    debugInfo.push({ step: "fetchComplete", status: resp.status });
+    console.log("Target API response:", {
+      status: resp.status,
+      statusText: resp.statusText
+    });
     const body = await resp.text();
-    debugInfo.push({ step: "bodyReceived", length: body.length });
+    console.log("Response body length:", body.length);
+    if (body.length < 500) {
+      console.log("Response body:", body);
+    } else {
+      console.log("Response body preview:", body.substring(0, 200) + "...");
+    }
     return {
       statusCode: resp.status,
       headers: {
         "Content-Type": "application/json",
         ...corsHeaders(origin)
       },
-      body: JSON.stringify({
-        debug: debugInfo,
-        originalResponse: body,
-        targetApiStatus: resp.status
-      })
+      body
     };
   } catch (error) {
-    debugInfo.push({
-      step: "error",
-      message: error.message,
-      stack: error.stack
-    });
+    console.error("Proxy error:", error);
+    console.error("Error stack:", error.stack);
     return {
       statusCode: 502,
-      headers: corsHeaders(),
+      headers: corsHeaders(origin),
       body: JSON.stringify({
         error: "Proxy failed",
-        debug: debugInfo,
-        details: error.message
+        message: error.message,
+        type: error.constructor.name
       })
     };
   }

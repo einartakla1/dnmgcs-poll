@@ -130,13 +130,14 @@ resource "aws_iam_role_policy" "lambda_policy" {
 }
 
 resource "aws_lambda_function" "poll_api" {
-  function_name = "${var.project}-${var.environment}-api"
-  handler       = "index.handler"
-  runtime       = "nodejs20.x"
-  architectures = ["arm64"]
-  filename      = "${path.module}/lambda/package.zip"
-  role          = aws_iam_role.lambda_exec_role.arn
-  timeout       = 10
+  function_name    = "${var.project}-${var.environment}-api"
+  handler          = "index.handler"
+  runtime          = "nodejs20.x"
+  architectures    = ["arm64"]
+  filename         = "${path.module}/lambda/package.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda/package.zip")
+  role             = aws_iam_role.lambda_exec_role.arn
+  timeout          = 10
 
   environment {
     variables = {
@@ -269,13 +270,14 @@ resource "aws_api_gateway_usage_plan_key" "public_plan_key" {
 # PROXY Lambda (reuses same role for simplicity)
 # ----------------------------------------------
 resource "aws_lambda_function" "poll_proxy" {
-  function_name = "${var.project}-${var.environment}-proxy"
-  handler       = "proxy.handler" # matches the built entry file you zipped
-  runtime       = "nodejs20.x"
-  architectures = ["arm64"]
-  filename      = "${path.module}/lambda/package-proxy.zip"
-  role          = aws_iam_role.lambda_exec_role.arn
-  timeout       = 10
+  function_name    = "${var.project}-${var.environment}-proxy"
+  handler          = "proxy.handler" # matches the built entry file you zipped
+  runtime          = "nodejs20.x"
+  architectures    = ["arm64"]
+  filename         = "${path.module}/lambda/package-proxy.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda/package-proxy.zip")
+  role             = aws_iam_role.lambda_exec_role.arn
+  timeout          = 10
 
   environment {
     variables = {

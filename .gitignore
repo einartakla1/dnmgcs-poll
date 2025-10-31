@@ -1,0 +1,29 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfstate.d/
+.terraform.lock.hcl
+
+# Node / build output
+node_modules/
+dist/
+*.tsbuildinfo
+package.zip
+package-proxy.zip
+package-poll.zip
+
+# Local env
+.env
+.env.local
+*.tfvars
+
+# IDE/system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

@@ -1,0 +1,22 @@
+{
+    "name": "dnmgcs-poll-lambda",
+    "version": "1.0.0",
+    "dependencies": {
+        "@aws-sdk/client-dynamodb": "^3.920.0",
+        "@aws-sdk/lib-dynamodb": "^3.920.0"
+    },
+    "devDependencies": {
+        "@types/aws-lambda": "^8.10.157",
+        "@types/node": "^24.9.2",
+        "tsup": "^8.0.0",
+        "typescript": "^5.4.0"
+    },
+    "scripts": {
+        "build:poll": "tsup index.ts --format=cjs --target=node20 --minify --out-dir=dist-poll",
+        "build:proxy": "tsup proxy.ts --format=cjs --target=node20 --out-dir=dist-proxy",
+        "zip:poll": "cd dist-poll && zip -r ../package.zip index.js",
+        "zip:proxy": "cd dist-proxy && zip -r ../package-proxy.zip proxy.js",
+        "build": "npm run build:poll && npm run build:proxy && npm run zip:poll && npm run zip:proxy",
+        "clean": "rm -rf dist-poll dist-proxy package.zip package-proxy.zip"
+    }
+}

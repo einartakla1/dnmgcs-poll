@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "target": "ES2020",
+        "module": "commonjs",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "types": [
+            "node",
+            "aws-lambda"
+        ],
+        "outDir": "dist"
+    },
+    "include": [
+        "*.ts"
+    ]
+}

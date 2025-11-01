@@ -18,6 +18,8 @@ const ENVIRONMENT = process.env.NODE_ENV || "dev";
 
 const PUBLIC_API_KEY = process.env.PUBLIC_API_KEY;
 
+
+
 function response(
     status: number,
     body: any,
@@ -48,6 +50,16 @@ function parseClientIp(event: APIGatewayProxyEvent): string {  // Changed from V
 export const handler = async (
     event: APIGatewayProxyEvent  // Changed from V2
 ): Promise<APIGatewayProxyResult> => {  // Changed from V2
+
+    if ((event as any).warmup) {
+        console.log('Warmup ping received');
+        return {
+            statusCode: 200,
+            body: JSON.stringify({ message: 'warm' })
+        };
+    }
+
+
     const origin = event.headers?.origin || event.headers?.Origin;
     const method = event.httpMethod;  // Changed from event.requestContext.http.method
     const path = event.path;  // Changed from event.rawPath

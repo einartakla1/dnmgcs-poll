@@ -29,6 +29,13 @@ function corsHeaders(origin) {
   return headers;
 }
 exports.handler = async (event) => {
+  if (event.warmup) {
+    console.log("Proxy warmup ping received");
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ message: "proxy warm" })
+    };
+  }
   console.log("=== PROXY INVOKED ===");
   console.log("Environment variables:", {
     TARGET_API_BASE: TARGET_API_BASE || "[MISSING]",

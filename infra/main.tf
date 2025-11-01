@@ -153,11 +153,11 @@ resource "aws_lambda_function" "poll_api" {
 }
 
 # ----------------------------
-# Provisioned Concurrency 
+# Provisioned Concurrency (DISABLED for cost savings)
 # ----------------------------
 variable "enable_provisioned_concurrency" {
   type    = bool
-  default = true
+  default = false
 }
 
 resource "aws_lambda_provisioned_concurrency_config" "proxy_concurrency" {
@@ -174,6 +174,46 @@ resource "aws_lambda_provisioned_concurrency_config" "api_concurrency" {
   provisioned_concurrent_executions = 1
 }
 
+# ----------------------------
+# LAMBDA WARMING
+# ----------------------------
+
+resource "aws_cloudwatch_event_rule" "keep_warm" {
+  name                = "${var.project}-${var.environment}-keep-warm"
+  description         = "Keep Poll API Lambda warm to avoid cold starts"
+  schedule_expression = "rate(5 minutes)"
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "keep_warm_api" {
+  rule      = aws_cloudwatch_event_rule.keep_warm.name
+  target_id = "warm-poll-api"
+  arn       = aws_lambda_function.poll_api.arn
+  input     = jsonencode({ "warmup" = true })
+}
+
+resource "aws_lambda_permission" "allow_cloudwatch_warmup" {
+  statement_id  = "AllowWarmupFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.poll_api.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.keep_warm.arn
+}
+
+resource "aws_cloudwatch_event_target" "keep_warm_proxy" {
+  rule      = aws_cloudwatch_event_rule.keep_warm.name
+  target_id = "warm-poll-proxy"
+  arn       = aws_lambda_function.poll_proxy.arn
+  input     = jsonencode({ "warmup" = true })
+}
+
+resource "aws_lambda_permission" "allow_cloudwatch_warmup_proxy" {
+  statement_id  = "AllowWarmupFromCloudWatchProxy"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.poll_proxy.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.keep_warm.arn
+}
 
 # ----------------------------
 # API GATEWAY (REST API)
@@ -188,6 +228,7 @@ resource "aws_api_gateway_rest_api" "poll_api" {
   tags = local.common_tags
 }
 
+# Protected backend endpoint (requires API key)
 resource "aws_api_gateway_resource" "proxy" {
   rest_api_id = aws_api_gateway_rest_api.poll_api.id
   parent_id   = aws_api_gateway_rest_api.poll_api.root_resource_id
@@ -219,34 +260,6 @@ resource "aws_lambda_permission" "api_permission" {
   source_arn    = "${aws_api_gateway_rest_api.poll_api.execution_arn}/*/*"
 }
 
-resource "aws_api_gateway_deployment" "poll_deployment" {
-  rest_api_id = aws_api_gateway_rest_api.poll_api.id
-  triggers = {
-    redeployment = sha1(jsonencode({
-      poll_integration  = aws_api_gateway_integration.lambda_integration.id
-      poll_method       = aws_api_gateway_method.proxy_method.id
-      proxy_integration = aws_api_gateway_integration.proxy_public_integration.id
-      proxy_method      = aws_api_gateway_method.proxy_public_method.id
-    }))
-  }
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-
-resource "aws_api_gateway_stage" "prod" {
-  deployment_id = aws_api_gateway_deployment.poll_deployment.id
-  rest_api_id   = aws_api_gateway_rest_api.poll_api.id
-  stage_name    = var.environment
-  tags          = local.common_tags
-}
-
-
-
-
-
-
 # ----------------------------
 # API KEY + USAGE PLAN
 # ----------------------------
@@ -254,7 +267,7 @@ resource "aws_api_gateway_stage" "prod" {
 resource "aws_api_gateway_api_key" "public_key" {
   name        = "${var.project}-${var.environment}-public-api-key"
   enabled     = true
-  description = "API key for Vev frontend polling system"
+  description = "API key for internal proxy Lambda"
   tags        = local.common_tags
 }
 
@@ -267,12 +280,12 @@ resource "aws_api_gateway_usage_plan" "public_usage_plan" {
   }
 
   throttle_settings {
-    rate_limit  = 50
-    burst_limit = 100
+    rate_limit  = 100
+    burst_limit = 200
   }
 
   quota_settings {
-    limit  = 10000
+    limit  = 50000
     period = "DAY"
   }
 
@@ -285,16 +298,12 @@ resource "aws_api_gateway_usage_plan_key" "public_plan_key" {
   usage_plan_id = aws_api_gateway_usage_plan.public_usage_plan.id
 }
 
-
-
-
-
 # ----------------------------------------------
-# PROXY Lambda (reuses same role for simplicity)
+# PROXY Lambda (adds API key + handles CORS)
 # ----------------------------------------------
 resource "aws_lambda_function" "poll_proxy" {
   function_name    = "${var.project}-${var.environment}-proxy"
-  handler          = "proxy.handler" # matches the built entry file you zipped
+  handler          = "proxy.handler"
   runtime          = "nodejs20.x"
   architectures    = ["arm64"]
   filename         = "${path.module}/lambda/package-proxy.zip"
@@ -305,7 +314,6 @@ resource "aws_lambda_function" "poll_proxy" {
 
   environment {
     variables = {
-      # The same base URL you output; build it here for the proxy:
       TARGET_API_BASE = "https://${aws_api_gateway_rest_api.poll_api.id}.execute-api.${var.region}.amazonaws.com/${var.environment}"
       PUBLIC_API_KEY  = aws_api_gateway_api_key.public_key.value
       ALLOWED_ORIGINS = "https://dn.no,https://www.dn.no,https://editor.vev.design,https://nhst.vev.site,http://localhost:3000"
@@ -316,7 +324,7 @@ resource "aws_lambda_function" "poll_proxy" {
 }
 
 # -------------------------
-# /proxy/{proxy+} resource
+# Public /proxy/{proxy+} endpoint (no API key required)
 # -------------------------
 resource "aws_api_gateway_resource" "proxy_public" {
   rest_api_id = aws_api_gateway_rest_api.poll_api.id
@@ -335,7 +343,7 @@ resource "aws_api_gateway_method" "proxy_public_method" {
   resource_id      = aws_api_gateway_resource.proxy_public_deep.id
   http_method      = "ANY"
   authorization    = "NONE"
-  api_key_required = false # <-- end-users do NOT need the key
+  api_key_required = false
 }
 
 resource "aws_api_gateway_integration" "proxy_public_integration" {
@@ -371,146 +379,47 @@ resource "aws_lambda_permission" "proxy_public_permission" {
   source_arn    = "${aws_api_gateway_rest_api.poll_api.execution_arn}/*/*"
 }
 
-resource "aws_wafv2_web_acl" "api_waf" {
-  name        = "${var.project}-${var.environment}-waf"
-  description = "Rate-limit abusive clients for ${var.project} ${var.environment}"
-  scope       = "REGIONAL"
+# ----------------------------
+# DEPLOYMENT & STAGE
+# ----------------------------
 
-  default_action {
-    allow {}
+resource "aws_api_gateway_deployment" "poll_deployment" {
+  rest_api_id = aws_api_gateway_rest_api.poll_api.id
+  triggers = {
+    redeployment = sha1(jsonencode({
+      poll_integration  = aws_api_gateway_integration.lambda_integration.id
+      poll_method       = aws_api_gateway_method.proxy_method.id
+      proxy_integration = aws_api_gateway_integration.proxy_public_integration.id
+      proxy_method      = aws_api_gateway_method.proxy_public_method.id
+    }))
   }
-
-  rule {
-    name     = "RateLimit"
-    priority = 1
-
-    action {
-      block {}
-    }
-
-    statement {
-      rate_based_statement {
-        limit              = 2000 # requests in a 5-minute window per IP
-        aggregate_key_type = "IP"
-      }
-    }
-
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "${var.project}-${var.environment}-waf-ratelimit"
-      sampled_requests_enabled   = true
-    }
+  lifecycle {
+    create_before_destroy = true
   }
-
-  visibility_config {
-    cloudwatch_metrics_enabled = true
-    metric_name                = "${var.project}-${var.environment}-waf"
-    sampled_requests_enabled   = true
-  }
-
-  tags = local.common_tags
 }
 
-resource "aws_wafv2_web_acl_association" "api_waf_assoc" {
-  resource_arn = "arn:aws:apigateway:${var.region}::/restapis/${aws_api_gateway_rest_api.poll_api.id}/stages/${aws_api_gateway_stage.prod.stage_name}"
-  web_acl_arn  = aws_wafv2_web_acl.api_waf.arn
+resource "aws_api_gateway_stage" "prod" {
+  deployment_id = aws_api_gateway_deployment.poll_deployment.id
+  rest_api_id   = aws_api_gateway_rest_api.poll_api.id
+  stage_name    = var.environment
+  tags          = local.common_tags
 }
-
 
 # ----------------------------
-# CloudFront distribution for caching poll results
-# ----------------------------
-resource "aws_cloudfront_distribution" "poll_results_cache" {
-  enabled             = true
-  comment             = "CloudFront cache for GET /proxy/results"
-  default_root_object = ""
-
-  origin {
-    domain_name = "${aws_api_gateway_rest_api.poll_api.id}.execute-api.${var.region}.amazonaws.com"
-    origin_id   = "api-gateway-origin"
-    origin_path = "/${var.environment}"
-    custom_origin_config {
-      http_port              = 80
-      https_port             = 443
-      origin_protocol_policy = "https-only"
-      origin_ssl_protocols   = ["TLSv1.2"] # ✅ required
-    }
-  }
-
-  default_cache_behavior {
-    target_origin_id       = "api-gateway-origin"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
-    cached_methods         = ["GET", "HEAD"]
-    default_ttl            = 0
-    max_ttl                = 0
-    min_ttl                = 0
-
-    forwarded_values {
-      query_string = true
-      headers      = ["Origin"]
-
-      cookies {
-        forward = "none" # ✅ required block
-      }
-    }
-  }
-
-  ordered_cache_behavior {
-    path_pattern           = "proxy/results*"
-    target_origin_id       = "api-gateway-origin"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
-    cached_methods         = ["GET", "HEAD"]
-    default_ttl            = 30
-    max_ttl                = 60
-    min_ttl                = 10
-
-    forwarded_values {
-      query_string = true
-      headers      = ["Origin"]
-
-      cookies {
-        forward = "none" # ✅ required block
-      }
-    }
-  }
-
-  price_class = "PriceClass_100"
-
-  restrictions {
-    geo_restriction {
-      restriction_type = "none"
-    }
-  }
-
-  viewer_certificate {
-    cloudfront_default_certificate = true
-  }
-
-  tags = local.common_tags
-}
-
-output "cloudfront_url" {
-  value = "https://${aws_cloudfront_distribution.poll_results_cache.domain_name}"
-}
-
-
-
-# ----------------------------
-# OUTPUT
+# OUTPUTS
 # ----------------------------
 
 output "api_base_url" {
-  value = "https://${aws_api_gateway_rest_api.poll_api.id}.execute-api.${var.region}.amazonaws.com/${var.environment}"
+  value       = "https://${aws_api_gateway_rest_api.poll_api.id}.execute-api.${var.region}.amazonaws.com/${var.environment}"
+  description = "Base URL for direct API access (requires API key)"
+}
+
+output "proxy_api_url" {
+  value       = "https://${aws_api_gateway_rest_api.poll_api.id}.execute-api.${var.region}.amazonaws.com/${var.environment}/proxy"
+  description = "Public proxy URL (use this in your frontend)"
 }
 
 output "public_api_key" {
   value     = aws_api_gateway_api_key.public_key.value
   sensitive = true
 }
-
-output "proxy_api_url" {
-  value = "https://${aws_api_gateway_rest_api.poll_api.id}.execute-api.${var.region}.amazonaws.com/${var.environment}/proxy"
-}
-

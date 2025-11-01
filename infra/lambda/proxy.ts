@@ -42,6 +42,14 @@ function corsHeaders(origin?: string): Record<string, string> {
 exports.handler = async (
     event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
+    if ((event as any).warmup) {
+        console.log('Proxy warmup ping received');
+        return {
+            statusCode: 200,
+            body: JSON.stringify({ message: 'proxy warm' })
+        };
+    }
+
     // Log everything for debugging
     console.log("=== PROXY INVOKED ===");
     console.log("Environment variables:", {
